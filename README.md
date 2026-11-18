@@ -31,7 +31,7 @@ graph TD
         Pool -->|v3 / v3-Enterprise| V3Solver["Execute grecaptcha.execute() -> Token"]
         Pool -->|v2 / Invisible / Enterprise| V2Solver["Render & Click Anchor Frame"]
         V2Solver -->|Bypass / Audio Challenge| AudioPipeline["Audio Challenge Handler"]
-        AudioPipeline -->|Download MP3| AudioConvert["SoX Audio Conversion (16kHz Mono WAV)"]
+        AudioPipeline -->|Download MP3| AudioConvert["FFmpeg Audio Conversion (16kHz Mono WAV)"]
         AudioConvert -->|Stdin JSON IPC| VoskWorker["Persistent vosk_worker.py (Model in RAM)"]
         VoskWorker -->|Transcribed Text| AudioPipeline
         AudioPipeline -->|Verify Response| ExtractToken["Token Extraction (DOM / Callback)"]
@@ -50,7 +50,7 @@ sequenceDiagram
     participant Pool as Stealth Context Pool
     participant Browser as rebrowser-playwright
     participant Google as Google reCAPTCHA CDN
-    participant SoX as SoX Engine
+    participant FFmpeg as FFmpeg Engine
     participant Vosk as vosk_worker.py (RAM)
 
     Client->>API: GET /solve?url=...&sitekey=...&type=v2&proxy=...
@@ -63,8 +63,8 @@ sequenceDiagram
     Google-->>Browser: Trigger Audio/Image Challenge Popup
     Browser->>Browser: Click #recaptcha-audio-button
     Google-->>Browser: Stream MP3 Audio Payload
-    Browser->>SoX: Download MP3 & Transcode to 16kHz Mono WAV
-    SoX-->>API: Temporary WAV File Ready
+    Browser->>FFmpeg: Download MP3 & Transcode to 16kHz Mono WAV
+    FFmpeg-->>API: Temporary WAV File Ready
     API->>Vosk: IPC Stdin: {"wav": "/tmp/rc_audio.wav"}
     Note over Vosk: Kaldi Model Pre-warmed in RAM (~0.25s)
     Vosk-->>API: IPC Stdout: {"text": "9 1 4 2 8", "time": 0.23}
@@ -99,7 +99,7 @@ For v2 checkboxes and invisible challenges that require manual interaction:
 2. **Audio Challenge Trigger**: When Google displays the image/audio challenge dialog, the solver automatically clicks `#recaptcha-audio-button`.
 3. **Payload Extraction**: The audio challenge MP3 stream is fetched directly via Playwright's network context (inheriting proxy & session headers).
 4. **Instant In-Memory Speech Recognition**:
-   - The MP3 is converted to a 16kHz mono WAV using SoX in ~30ms.
+   - The MP3 is converted to a 16kHz mono PCM WAV using FFmpeg in ~40–60ms.
    - The WAV is sent via stdin JSON IPC to [`vosk_worker.py`](file:///home/nexus/Desktop/files/vosk_worker.py), which keeps the Kaldi neural acoustic model resident in RAM.
    - Vosk transcribes the audio in **0.20s – 0.35s** (completely offline, $0 cost).
    - The transcript is processed by an intelligent digit normalizer converting spoken words and homophones (`"three to four"` ➔ `"324"`, `"for"` ➔ `"4"`, `"won"` ➔ `"1"`).
@@ -127,11 +127,22 @@ For invisible v3 and v3 Enterprise:
 
 ## 📦 Prerequisites
 
-### 1. System Requirements (Linux / Ubuntu / Debian / Kali)
+### 1. System Requirements (Linux / Ubuntu / Debian / Kali / macOS / Windows)
 ```bash
 sudo apt-get update
-sudo apt-get install -y nodejs npm python3 python3-pip python3-venv sox libsox-fmt-mp3
+sudo apt-get install -y nodejs npm python3 python3-pip python3-venv ffmpeg
 ```
+
+FFmpeg is a single cross-platform binary — install it with whichever package manager your OS uses:
+
+| Platform | Command |
+| :--- | :--- |
+| Debian / Ubuntu / Kali | `sudo apt-get install -y ffmpeg` |
+| macOS | `brew install ffmpeg` |
+| Windows (winget) | `winget install Gyan.FFmpeg` |
+| Windows (Chocolatey) | `choco install ffmpeg` |
+
+If `ffmpeg` is not on `PATH`, point the solver at it explicitly with `FFMPEG_PATH=/full/path/to/ffmpeg`. The server logs a warning at boot and `GET /health` reports `"ffmpeg": false` when the binary cannot be found.
 
 ### 2. Install Node Dependencies
 ```bash
@@ -404,7 +415,7 @@ python3 info.py -u https://example.com/ -j
 
 ### 2. `audio_challenge_url_not_found`
 - **Cause**: The audio button was not found or was blocked before the audio URL could load.
-- **Fix**: The solver automatically performs multi-round retries with auto-reload. If recurring, ensure `sox` and `libsox-fmt-mp3` are installed.
+- **Fix**: The solver automatically performs multi-round retries with auto-reload. If recurring, ensure `ffmpeg` is installed and on `PATH` (or set `FFMPEG_PATH`).
 
 ### 3. Chromium Crash on Linux as Root
 - **Cause**: Chromium sandboxing restrictions on headless Linux servers.

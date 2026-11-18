@@ -1,7 +1,7 @@
 // language: JavaScript (Node.js), file: recaptcha_solver.js, target: Node 18+
 // reCAPTCHA solver — v2 checkbox, v2 invisible, v2 enterprise,
 // v3, v3 enterprise. Single /solve endpoint, rebrowser-playwright pool.
-// Audio challenge auto-solver: persistent offline Vosk STT daemon + SoX.
+// Audio challenge auto-solver: persistent offline Vosk STT daemon + FFmpeg.
 
 const express = require('express');
 const { chromium } = require('rebrowser-playwright');
@@ -10,7 +10,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 const readline = require('readline');
 
 const PORT = process.env.PORT || 6868;
@@ -34,6 +34,21 @@ function releaseSlot() {
 const TRANSCRIBE_PY = path.join(__dirname, 'transcribe.py');
 const VOSK_PYTHON   = path.join(__dirname, 'venv', 'bin', 'python');
 const VOSK_WORKER   = path.join(__dirname, 'vosk_worker.py');
+const FFMPEG_BIN    = process.env.FFMPEG_PATH || 'ffmpeg';
+
+// Cached availability check for the ffmpeg binary. Used by the boot warning and
+// /health, so a missing dependency is visible before the first audio request.
+let ffmpegOk = null;
+function hasFfmpeg() {
+    if (ffmpegOk !== null) return ffmpegOk;
+    try {
+        execFileSync(FFMPEG_BIN, ['-version'], { stdio: 'ignore', timeout: 3000 });
+        ffmpegOk = true;
+    } catch {
+        ffmpegOk = false;
+    }
+    return ffmpegOk;
+}
 
 // ─── Persistent Vosk Worker Client ────────────────────────────────────────────
 
@@ -723,7 +738,7 @@ async function solveV2Single(siteUrl, siteKey, invisible, isEnterprise, timeout,
                     return { success: false, err: 'audio_challenge_url_not_found' };
                 }
 
-                // Download MP3 and convert to WAV via SoX
+                // Download MP3 and convert to WAV via FFmpeg
                 let mp3File = null, wavFile = null;
                 let transcript = null;
                 try {
@@ -740,7 +755,12 @@ async function solveV2Single(siteUrl, siteKey, invisible, isEnterprise, timeout,
                     }
                     if (mp3File && fs.existsSync(mp3File) && fs.statSync(mp3File).size > 100) {
                         wavFile = mp3File.replace('.mp3', '.wav');
-                        execSync(`sox "${mp3File}" -r 16000 -c 1 "${wavFile}"`, { timeout: 8000 });
+                        execFileSync(FFMPEG_BIN, [
+                            '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+                            '-i', mp3File,
+                            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+                            '-f', 'wav', wavFile,
+                        ], { timeout: 8000, stdio: ['ignore', 'ignore', 'pipe'] });
                         transcript = await voskWorker.transcribe(wavFile);
                     }
                 } catch (e) {
@@ -1171,12 +1191,18 @@ app.get('/health', (req, res) => res.json({
     ok: true,
     pool: ctxPool.length,
     voskWorker: voskWorker.ready,
+    ffmpeg: hasFfmpeg(),
     types: ['v2', 'v2-callback', 'v2-invisible', 'v2-enterprise', 'v3', 'v3-enterprise']
 }));
 
 // ─── boot ─────────────────────────────────────────────────────────────────────
 
 async function main() {
+    if (!hasFfmpeg()) {
+        console.warn(`  [warn] '${FFMPEG_BIN}' not found — v2 audio challenges will fail.`);
+        console.warn('         install: apt install ffmpeg | brew install ffmpeg | winget install Gyan.FFmpeg');
+    }
+
     browser = await launchBrowser();
 
     for (let i = 0; i < POOL; i++) {
