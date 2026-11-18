@@ -742,7 +742,9 @@ async function solveV2Single(siteUrl, siteKey, invisible, isEnterprise, timeout,
                 let mp3File = null, wavFile = null;
                 let transcript = null;
                 try {
+                    console.log(`  [audio] mp3 url "${mp3Url}"`);
                     const audioResp = await pg.request.get(mp3Url, { timeout: 6000 }).catch(() => null);
+                    console.log(`  [audio] mp3 audioResp "${audioResp}"`);
                     if (audioResp && audioResp.ok()) {
                         const buffer = await audioResp.body().catch(() => null);
                         if (buffer && buffer.length > 100) {
@@ -750,6 +752,7 @@ async function solveV2Single(siteUrl, siteKey, invisible, isEnterprise, timeout,
                             fs.writeFileSync(mp3File, buffer);
                         }
                     }
+                    console.log(`  [audio] mp3 mp3File "${mp3File}"`);
                     if (!mp3File) {
                         mp3File = await downloadFile(mp3Url).catch(() => null);
                     }
